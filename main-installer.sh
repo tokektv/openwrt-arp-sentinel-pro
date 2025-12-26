@@ -1,12 +1,6 @@
-
----
-
-## **2. 📄 main-installer.sh**
-
-```bash
 #!/bin/sh
 # ARP Sentinel Pro - Main Installer
-# Calls modules in sequence
+# CLEAN VERSION - No backticks, no substitution errors
 
 set -e
 
@@ -18,23 +12,24 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 print_header() {
+    clear
     echo ""
-    echo "╔════════════════════════════════════════════════╗"
-    echo "║           ARP Sentinel Pro Installer           ║"
-    echo "╚════════════════════════════════════════════════╝"
+    echo "=================================================="
+    echo "           ARP Sentinel Pro Installer"
+    echo "=================================================="
     echo ""
 }
 
 print_step() {
-    echo -e "${BLUE}[$(date '+%H:%M:%S')]${NC} $1"
+    echo "[$(date '+%H:%M:%S')] $1"
 }
 
 print_success() {
-    echo -e "${GREEN}✓${NC} $1"
+    echo "✓ $1"
 }
 
 print_error() {
-    echo -e "${RED}✗${NC} $1"
+    echo "✗ $1"
 }
 
 check_environment() {
@@ -55,79 +50,203 @@ check_environment() {
     print_success "Environment OK"
 }
 
-run_module() {
-    local module="$1"
-    local module_file="modules/${module}"
+install_dependencies() {
+    print_step "Installing dependencies..."
     
-    if [ -f "$module_file" ]; then
-        print_step "Running module: ${module%.sh}"
-        chmod +x "$module_file"
-        if "$module_file"; then
-            print_success "Module ${module%.sh} completed"
-        else
-            print_error "Module ${module%.sh} failed"
-            return 1
-        fi
+    opkg update
+    opkg install arpwatch arp-scan ipset curl ca-bundle
+    
+    if [ $? -eq 0 ]; then
+        print_success "Dependencies installed"
     else
-        print_error "Module not found: $module"
-        return 1
+        print_error "Failed to install some packages"
+        exit 1
     fi
+}
+
+create_directories() {
+    print_step "Creating directories..."
+    
+    mkdir -p /opt/arp-sentinel
+    mkdir -p /opt/arp-sentinel/bin
+    mkdir -p /opt/arp-sentinel/data
+    mkdir -p /var/log/arp-sentinel
+    
+    print_success "Directories created"
+}
+
+setup_arpwatch() {
+    print_step "Setting up ARPwatch..."
+    
+    # Create config
+    cat > /etc/arpwatch.conf << ARPWATCH_CONF
+# ARPwatch configuration for ARP Sentinel
+OPTIONS="-N"
+INTERFACES="br-lan"
+ARGFILE="/var/lib/arpwatch/arp.dat"
+ARPWATCH_CONF
+    
+    print_success "ARPwatch configured"
+}
+
+create_main_script() {
+    print_step "Creating main script..."
+    
+    cat > /usr/bin/arp-sentinel << MAIN_SCRIPT
+#!/bin/sh
+# ARP Sentinel Control Script
+
+show_help() {
+    echo "ARP Sentinel Commands:"
+    echo "  start    - Start monitoring"
+    echo "  stop     - Stop monitoring"
+    echo "  status   - Show status"
+    echo "  scan     - Scan network"
+    echo "  logs     - Show logs"
+    echo "  help     - Show this help"
+}
+
+case "\$1" in
+    start)
+        echo "Starting ARP Sentinel..."
+        arpwatch -i br-lan -f /var/log/arp-sentinel/arpwatch.log &
+        echo "Started"
+        ;;
+    stop)
+        echo "Stopping ARP Sentinel..."
+        pkill arpwatch
+        echo "Stopped"
+        ;;
+    status)
+        echo "ARP Sentinel Status:"
+        if ps | grep -q "[a]rpwatch"; then
+            echo "  ARPwatch: RUNNING"
+        else
+            echo "  ARPwatch: STOPPED"
+        fi
+        echo ""
+        echo "Network devices: \$(arp -n | grep -v incomplete | wc -l)"
+        ;;
+    scan)
+        echo "Scanning network..."
+        arp-scan --interface=br-lan --localnet
+        ;;
+    logs)
+        echo "Showing logs..."
+        tail -f /var/log/arp-sentinel/arpwatch.log
+        ;;
+    help|--help|-h)
+        show_help
+        ;;
+    *)
+        echo "Unknown command: \$1"
+        show_help
+        exit 1
+        ;;
+esac
+MAIN_SCRIPT
+    
+    chmod +x /usr/bin/arp-sentinel
+    print_success "Main script created"
+}
+
+setup_monitoring_script() {
+    print_step "Creating monitoring script..."
+    
+    cat > /usr/bin/arp-monitor << MONITOR_SCRIPT
+#!/bin/sh
+# Real-time ARP Monitor
+
+echo "ARP Real-time Monitor"
+echo "Interface: br-lan"
+echo "Press Ctrl+C to stop"
+echo ""
+
+tcpdump -i br-lan -n -e arp 2>/dev/null | while read line; do
+    timestamp=\$(date '+%H:%M:%S')
+    
+    if echo "\$line" | grep -q "arp who-has"; then
+        echo "[\$timestamp] REQUEST: \$line"
+    elif echo "\$line" | grep -q "arp reply"; then
+        echo "[\$timestamp] REPLY: \$line"
+    fi
+done
+MONITOR_SCRIPT
+    
+    chmod +x /usr/bin/arp-monitor
+    print_success "Monitor script created"
+}
+
+setup_service() {
+    print_step "Setting up service..."
+    
+    cat > /etc/init.d/arp-sentinel << SERVICE_SCRIPT
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=10
+
+start() {
+    /usr/bin/arp-sentinel start
+}
+
+stop() {
+    /usr/bin/arp-sentinel stop
+}
+
+restart() {
+    stop
+    sleep 2
+    start
+}
+SERVICE_SCRIPT
+    
+    chmod +x /etc/init.d/arp-sentinel
+    /etc/init.d/arp-sentinel enable
+    
+    print_success "Service configured"
+}
+
+show_summary() {
+    echo ""
+    echo "=================================================="
+    echo "          INSTALLATION COMPLETED"
+    echo "=================================================="
+    echo ""
+    echo "What was installed:"
+    echo "  1. arpwatch & arp-scan packages"
+    echo "  2. Main command: arp-sentinel"
+    echo "  3. Monitor command: arp-monitor"
+    echo "  4. Service: /etc/init.d/arp-sentinel"
+    echo "  5. Log directory: /var/log/arp-sentinel"
+    echo ""
+    echo "Quick start:"
+    echo "  arp-sentinel start    # Start monitoring"
+    echo "  arp-sentinel status   # Check status"
+    echo "  arp-monitor           # Real-time monitor"
+    echo "  arp-sentinel scan     # Scan network"
+    echo ""
+    echo "Web interface (LuCI) will be available in next version"
+    echo ""
+    echo "Logs: tail -f /var/log/arp-sentinel/arpwatch.log"
+    echo ""
 }
 
 main() {
     print_header
     check_environment
+    install_dependencies
+    create_directories
+    setup_arpwatch
+    create_main_script
+    setup_monitoring_script
+    setup_service
     
-    # Create backup
-    print_step "Creating system backup..."
-    mkdir -p /tmp/arp-sentinel-backup
-    cp /etc/config/network /tmp/arp-sentinel-backup/ 2>/dev/null || true
-    cp /etc/config/wireless /tmp/arp-sentinel-backup/ 2>/dev/null || true
-    print_success "Backup created in /tmp/arp-sentinel-backup"
+    # Start the service
+    /usr/bin/arp-sentinel start
     
-    # Run modules in sequence
-    local modules=(
-        "01-dependencies.sh"
-        "02-directories.sh"
-        "03-arpwatch-config.sh"
-        "04-firewall-rules.sh"
-        "05-luci-interface.sh"
-        "06-services.sh"
-        "07-cron-jobs.sh"
-        "08-monitoring-scripts.sh"
-        "09-telegram-bot.sh"
-        "10-post-install.sh"
-    )
-    
-    for module in "${modules[@]}"; do
-        if ! run_module "$module"; then
-            print_error "Installation stopped at ${module%.sh}"
-            echo "Check logs in /var/log/arp-sentinel-install.log"
-            exit 1
-        fi
-    done
-    
-    # Final message
-    echo ""
-    echo "╔════════════════════════════════════════════════╗"
-    echo "║          INSTALLATION COMPLETED SUCCESSFULLY   ║"
-    echo "╚════════════════════════════════════════════════╝"
-    echo ""
-    echo "Next steps:"
-    echo "1. Configure Telegram bot (optional):"
-    echo "   Edit /etc/config/arp-sentinel"
-    echo ""
-    echo "2. Start the service:"
-    echo "   /etc/init.d/arp-sentinel start"
-    echo ""
-    echo "3. Access web interface:"
-    echo "   http://your-router-ip/cgi-bin/luci/admin/network/arp-sentinel"
-    echo ""
-    echo "4. Check status:"
-    echo "   arp-sentinel status"
-    echo ""
-    echo "For help: arp-sentinel --help"
+    show_summary
 }
 
 # Run main function
-main "$@"
+main
