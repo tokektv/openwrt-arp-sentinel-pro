@@ -1,0 +1,5 @@
+# Enable Telegram alerts
+uci set arp-sentinel.@telegram[0].enabled='1'
+uci set arp-sentinel.@telegram[0].bot_token='YOUR_TOKEN'
+uci set arp-sentinel.@telegram[0].chat_id='YOUR_CHAT_ID'
+uci commit arp-sentinel
